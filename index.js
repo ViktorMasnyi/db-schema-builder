@@ -12,7 +12,7 @@ const exportTo = require('./reporters/exportToFile');
 // Exit the program after all queries are complete
     await main()
         .catch((err) => {
-            console.error(err);
+            console.error(`Error was happened: ${err}`);
 
             process.exit(1);
         })

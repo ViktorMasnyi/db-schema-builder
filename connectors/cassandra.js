@@ -4,9 +4,10 @@ const schema = require('../validators/cassandraConfigSchema');
 const validate = require('../validators/validator');
 
 /**
- * DB client and data extraction logic are encapsulated to the single module,
- * because they are intended to work with one particular DB. There is impossible
- * to reuse this parts with other DB types
+ * As further improvement, I'd like to recommend introducing one additional
+ * adapter class to decouple db connector and extraction logic. This adapter
+ * should have getTableNames, getFirstRow, getTableSchema methods.
+ * CQL queries strings are also need to be extracted and put in some dedicated place
  */
 
 // validate config
@@ -14,22 +15,20 @@ validate(config, schema);
 
 const { contactPoints, localDataCenter, userName, password, sysKeyspaceNames } = config;
 
-let authProvider = new cassandra.auth.PlainTextAuthProvider(userName, password);
-const client = new cassandra.Client({
-    contactPoints: contactPoints,
-    authProvider: authProvider,
-    localDataCenter: localDataCenter,
-})
+const authProvider = new cassandra.auth.PlainTextAuthProvider(userName, password);
+const client = new cassandra.Client({contactPoints, authProvider, localDataCenter})
+
+async function getTableNames() {
+    const tableNames = "SELECT * FROM system_schema.tables";
+    const allTableNamesRes = await client.execute(tableNames, []);
+
+    return allTableNamesRes.rows
+        .filter(t => !sysKeyspaceNames[t.keyspace_name])
+}
 
 async function getDbStructure() {
     const schemaObj = {};
-    const tableNames = "SELECT * FROM system_schema.tables";
-    const allTableNamesRes = await client.execute(tableNames, []).catch((err) => {
-        console.log('ERROR apples:', err);
-    });
-
-    const allUserTableNames = allTableNamesRes.rows
-        .filter(t => !sysKeyspaceNames[t.keyspace_name])
+    const allUserTableNames = await getTableNames()
 
     for (const {keyspace_name, table_name} of allUserTableNames) {
         let tableSchemaRes = {};
@@ -38,22 +37,18 @@ async function getDbStructure() {
                          FROM ${keyspace_name}.${table_name}
                          LIMIT 1`;
 
-        let {rows = []} = await client.execute(query, []).catch((err) => {
-            console.log('ERROR to fetch first row from table:', err);
-        });
+        let {rows: dataRows = []} = await client.execute(query, []);
 
         // checking if at least one row was found - if not - use table schema
-        if (rows.length) {
-            schemaObj[table_name] = rows[0];
+        if (dataRows.length) {
+            schemaObj[table_name] = dataRows[0];
 
             continue;
         }
 
         const schemaQuery = "SELECT * FROM system_schema.columns WHERE table_name = ? AND keyspace_name = ? ALLOW FILTERING";
 
-        let { rows: schemaRows = [] } = await client.execute(schemaQuery, [table_name, keyspace_name]).catch((err) => {
-            console.log('ERROR to fetch the schema from system_schema:', err);
-        });
+        let { rows: schemaRows = [] } = await client.execute(schemaQuery, [table_name, keyspace_name]);
 
         if (schemaRows.length) {
             schemaRows.forEach(s => {
@@ -68,5 +63,5 @@ async function getDbStructure() {
     return schemaObj;
 }
 
-module.exports = {client, getDbStructure};
+module.exports = {client, getDbStructure, getTableNames};
 
