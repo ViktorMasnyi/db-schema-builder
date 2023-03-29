@@ -1,17 +1,18 @@
 const toJsonSchema = require('to-json-schema');
-const { writeFile } = require('fs')
+const {writeFile} = require('fs');
+const {client} = require('./connectors/cassandra');
 // ”cassandra-driver” is in the node_modules folder. Redirect if necessary.
 let cassandra = require('cassandra-driver');
 // todo: validate config at bootstrap
 // ============== CONNECTOR============
 // Replace 'Username' and 'Password' with the username and password from your cluster settings
-let authProvider = new cassandra.auth.PlainTextAuthProvider('cassandra', 'cassandra'); // todo: use config
+// let authProvider = new cassandra.auth.PlainTextAuthProvider('cassandra', 'cassandra'); // todo: use config
 // Replace the PublicIPs with the IP addresses of your clusters
-let contactPoints = ['localhost'];
+// let contactPoints = ['localhost'];
 // Replace DataCenter with the name of your data center, for example: 'AWS_VPC_US_EAST_1'
-let localDataCenter = 'datacenter1';
+// let localDataCenter = 'datacenter1';
 
-let client = new cassandra.Client({contactPoints: contactPoints, authProvider: authProvider, localDataCenter: localDataCenter, keyspace:'store'});
+// let client = new cassandra.Client({contactPoints: contactPoints, authProvider: authProvider, localDataCenter: localDataCenter, keyspace:'store'});
 // ==============END OF CONNECTOR============
 
 // ==============DATA EXTRACTOR============
@@ -38,27 +39,34 @@ let query = 'SELECT userid, item_count, data FROM store.shopping_cart WHERE user
  */
 
 // ==============END OF DATA EXTRACTOR============
-(async function() {
-    const schemaArr = [];
-    const allTableNamesRes = await client.execute(tableNames, []).catch((err) => {console.log('ERROR apples:', err);});
-    const sysKeyspaceNames = { // todo: add to config
-        "system_schema": true,
-        "system_auth": true,
-        "system_distributed": true,
-        "system": true,
-        "system_traces": true
-    };
+(async () => {
+    async function main() {
+        const schemaArr = [];
+        const allTableNamesRes = await client.execute(tableNames, []).catch((err) => {
+            console.log('ERROR apples:', err);
+        });
+        const sysKeyspaceNames = { // todo: add to config
+            "system_schema": true,
+            "system_auth": true,
+            "system_distributed": true,
+            "system": true,
+            "system_traces": true
+        };
 
-    const allUserTableNames = allTableNamesRes.rows
-        .filter(t => !sysKeyspaceNames[t.keyspace_name])
-        .map(t => ({keyspace_name: t.keyspace_name, table_name: t.table_name}));
+        const allUserTableNames = allTableNamesRes.rows
+            .filter(t => !sysKeyspaceNames[t.keyspace_name])
+        // .map(t => ({keyspace_name: t.keyspace_name, table_name: t.table_name})); // todo: not needed
 
-        for (const { keyspace_name, table_name } of allUserTableNames) {
+        for (const {keyspace_name, table_name} of allUserTableNames) {
             let tableSchemaRes = {};
             // trying to fetch first row
-            let query = `SELECT * FROM ${keyspace_name}.${table_name} LIMIT 1`;
+            let query = `SELECT *
+                         FROM ${keyspace_name}.${table_name}
+                         LIMIT 1`;
 
-            let { rows = [] } = await client.execute(query, []).catch((err) => {console.log('ERROR oranges:', err);});
+            let {rows = []} = await client.execute(query, []).catch((err) => {
+                console.log('ERROR oranges:', err);
+            });
             console.log('qq row example ' + JSON.stringify(rows) + '\n'.repeat(3));
             if (rows.length) {
                 // add to res object
@@ -85,7 +93,9 @@ let query = 'SELECT userid, item_count, data FROM store.shopping_cart WHERE user
 
             const schemaQuery = "SELECT * FROM system_schema.columns WHERE table_name = ? AND keyspace_name = ? ALLOW FILTERING";
 
-            let { rows: schemaRows = [] } = await client.execute(schemaQuery, [table_name, keyspace_name]).catch((err) => {console.log('ERROR pineapples:', err);});
+            let {rows: schemaRows = []} = await client.execute(schemaQuery, [table_name, keyspace_name]).catch((err) => {
+                console.log('ERROR pineapples:', err);
+            });
             console.log('schemaRows ' + JSON.stringify(schemaRows) + '\n'.repeat(3));
 
             if (schemaRows.length) {
@@ -105,18 +115,62 @@ let query = 'SELECT userid, item_count, data FROM store.shopping_cart WHERE user
         console.log('Raw result: ', JSON.stringify(schemaArr));
         await writeFile('schema.json', JSON.stringify(schemaArr), {}, err => console.log(err))
 
-})()
+
+
+    }
 
 // ==============DATA FORMATTER============
 // ==============END OF DATA FORMATTER============
 
 
 // Exit the program after all queries are complete
-Promise.allSettled([
-    // q1,
-    // q2,
-    // q3
-]).finally(() => client.shutdown());
+    await main()
+        .catch((err) => {
+            console.error(err);
 
+            process.exit(1);
+        })
+        .finally( () => shutdown());
+})()
 // todo: subscribe on unhandled promise rejections event and stuff...
 // todo: add graceful shutdown
+
+// Subscribe to system signals
+process.on('SIGTERM', async () => {
+    console.log('[App] SIGTERM signal caught');
+
+    await shutdown();
+});
+
+process.on('SIGINT', async () => {
+    console.log('[App] SIGINT signal caught');
+
+    await shutdown();
+});
+
+process.on('unhandledRejection', error => {
+    console.error(error);
+
+    console.log({
+        type: 'UnhandledRejection',
+        error: error.stack
+    });
+});
+process.on('uncaughtException', async error => {
+    console.error(error);
+
+    await shutdown()
+    console.log({
+        type: 'UncaughtException',
+        error: error.stack
+    });
+});
+
+// Graceful shutdown
+async function shutdown() {
+    console.log('[App] Closing DB connections');
+    await client.shutdown();
+
+    console.log('[App] Exit');
+    process.exit(0);
+}
