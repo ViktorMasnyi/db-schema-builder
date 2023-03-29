@@ -1,4 +1,3 @@
-// import { Validator } from '@cfworker/json-schema';
 const Ajv = require("ajv")
 const ajv = new Ajv()
 
@@ -9,4 +8,4 @@ module.exports = function (data, schema) {
     }
 
     return  validationResult;
-}
+};
